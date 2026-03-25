@@ -36,7 +36,7 @@
 3. こんな感じになります
    ![RM_Property.png](img\RM_Property.png)
 
-   > ![warning]
+> [!IMPORTANT]
    > バグによりConfigシートから値をとるようになっているためConfigシートにもURLなどの設定を記載しておいてください。
 
 ### 実装予定機能（予定は未定😏）
