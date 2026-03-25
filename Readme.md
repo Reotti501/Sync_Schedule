@@ -17,10 +17,10 @@
 2. 1行目は日付用です。
 
 3. A列には苗字や名前、あだ名など、分かるものを入力してください。
-   ![RM_Name](img\RM_Name.png)
+   ![RM_Name](img/RM_Name.png)
 
 4. 名前の行にそれぞれ案件名や、現場名などわかるものを記載してください。
-   ![RM_PJName](img\RM_PJName.png)
+   ![RM_PJName](img/RM_PJName.png)
 
 > [!Tip]
 > 拡張子を変更しなければファイル名は変更しても問題ありません。
@@ -29,12 +29,12 @@
 #### convert_Spreadsheet_this_file.xlsx
 
 1. Googleドライブにスプレッドシートとして保存してください。
-   ![RM_Spreadsheets](img\RM_Spreadsheets.png)
+   ![RM_Spreadsheets](img/RM_Spreadsheets.png)
 
 2. Apps Scriptのプロジェクトの設定にある「スクリプトプロパティを編集」からConfigシートのConfigNameと自分の環境の値を入力してください。
-   ![RM_Spreadsheets](img\RM_Config.png)
+   ![RM_Spreadsheets](img/RM_Config.png)
 3. こんな感じになります
-   ![RM_Property.png](img\RM_Property.png)
+   ![RM_Property.png](img/RM_Property.png)
 
 > [!IMPORTANT]
    > バグによりConfigシートから値をとるようになっているためConfigシートにもURLなどの設定を記載しておいてください。
