@@ -34,11 +34,10 @@
 2. Apps Scriptのプロジェクトの設定にある「スクリプトプロパティを編集」からConfigシートのConfigNameと自分の環境の値を入力してください。
    ![RM_Spreadsheets](img\RM_Config.png)
 3. こんな感じになります
-   ![RM_Property.png](img\RM_Property.png) 
+   ![RM_Property.png](img\RM_Property.png)
 
-   ![warning]
-   バグによりConfigシートから値をとるようになっているためConfigシートにもURLなどの設定を記載しておいてください。
-
+   > ![warning]
+   > バグによりConfigシートから値をとるようになっているためConfigシートにもURLなどの設定を記載しておいてください。
 
 ### 実装予定機能（予定は未定😏）
 * サイボウズOfficeの予定登録に対応したCSVファイル出力
