@@ -1,83 +1,113 @@
 function updateAndSyncSchedule() {
   const currentSS = SpreadsheetApp.getActiveSpreadsheet();
-  const configSheet = currentSS.getSheetByName("Config");
-  
-  if (!configSheet) {
-    console.error("エラー: 'Config' シートが見つかりません。");
-    return;
-  }
 
-  // --- 1. スクリプトプロパティから各種設定を取得 ---
+  // --- 1. スクリプトプロパティから全設定を取得 ---
   const props = PropertiesService.getScriptProperties().getProperties();
-  const geminiApiKey = props['GEMINI_API_KEY'];
-  const workDirId = props['Work_Dir'];
-  
-  // カラー設定を取得（小文字に統一して比較準備）
+  const geminiApiKey = props['Gemini_key'];
+
+  // カラー設定（小文字に統一して比較準備）
   const colorAttend = (props['Color_Attend'] || "#ff0000").toLowerCase();
-  const colorMain = (props['Color_Main'] || "#00ffff").toLowerCase();
+  const colorMain   = (props['Color_Main']   || "#00ffff").toLowerCase();
 
   // --- IDまたはURLからIDを抽出するヘルパー ---
+  // Google Drive URL の /d/XXXXX 形式を優先し、次に ?id=XXXXX、最後に25文字以上の英数字列にフォールバック
   const extractId = (input) => {
     if (!input || typeof input !== 'string') return input;
-    const match = input.match(/[-\w]{25,}/);
-    return match ? match[0] : input;
+    const slashD = input.match(/\/d\/([-\w]{25,})/);
+    if (slashD) return slashD[1];
+    const queryId = input.match(/[?&]id=([-\w]{25,})/);
+    if (queryId) return queryId[1];
+    const plain = input.match(/[-\w]{25,}/);
+    return plain ? plain[0] : input;
   };
 
-  // --- 希望休カレンダーの取得 ---
+  // --- 2. スクリプトプロパティから各種設定を取得 ---
+  const sourceFileId = extractId(props['Inport_URL'] || "");
+  const targetSSId   = extractId(props['Export_URL']  || "");
+  const syncLineNo   = parseInt(props['SyncLine_No']  || "1");
+  const workFolderId = extractId(props['Work_Dir']    || "");
+
+  const syncTag = "-- Sync_Scheduleによって自動登録 --";
+  const now = new Date();
+  const syncTimestamp = Utilities.formatDate(now, "JST", "yyyy/MM/dd HH:mm");
+
+  // キャッシュと集計
+  let addressCache = {};
+  let geminiCount = 0;
+
+  // --- 3. 稼働カレンダーの取得 ---
+  const workCalendarId = (props['Work_CalendarID'] || "").trim();
+  let calendar = null;
+  if (workCalendarId) {
+    calendar = CalendarApp.getCalendarById(workCalendarId);
+    if (!calendar) {
+      console.error("【エラー】Work_CalendarID のカレンダーが見つかりません（ID: " + workCalendarId + "）。処理を中断します。");
+      return;
+    }
+    console.log("カレンダー接続完了 \n接続カレンダー名：【" + calendar.getName() + "】 \nカレンダーID:" + workCalendarId);
+  } else {
+    console.warn("【警告】Work_CalendarID が未設定のため、プライマリカレンダーを使用します。");
+    calendar = CalendarApp.getCalendarById('primary');
+  }
+
+  // --- 4. 希望休カレンダーの取得 ---
   const reqOffCalendarId = (props['Req_Off_CalendarID'] || "").trim();
-  console.log("【Req_Off_CalendarID】" + reqOffCalendarId);
   let reqOffCalendar = null;
   if (reqOffCalendarId) {
     try {
       reqOffCalendar = CalendarApp.getCalendarById(reqOffCalendarId);
       if (!reqOffCalendar) {
-        console.warn("【警告】Req_Off_URL のカレンダーが見つかりません（ID: " + reqOffCalendarId + "）。希望休登録をスキップします。");
+        console.warn("【警告】Req_Off_CalendarID のカレンダーが見つかりません（ID: " + reqOffCalendarId + "）。希望休登録をスキップします。");
       } else {
-        console.log("【希望休カレンダー接続成功】" + reqOffCalendar.getName());
+        console.log("カレンダー接続完了 \n接続カレンダー名：【" + reqOffCalendar.getName() + "】 \nカレンダーID:" + reqOffCalendarId);
       }
     } catch (e) {
-      console.warn("【警告】Req_Off_URL の取得に失敗しました: " + e.message);
+      console.warn("【警告】Req_Off_CalendarID の取得に失敗しました: " + e.message);
     }
   } else {
-    console.log("【情報】Req_Off_URL が未設定のため、希望休登録をスキップします。");
+    console.log("【情報】Req_Off_CalendarID が未設定のため、希望休登録をスキップします。");
   }
 
-  // --- 2. Configシートから設定を読み込む ---
-  const configValues = configSheet.getDataRange().getValues();
-  let conf = {};
-  configValues.forEach(row => { conf[row[0]] = row[1]; });
-
-  const sourceFileId = extractId(conf["Inport_URL"]);
-  const targetSSId = extractId(conf["Export_URL"]);
-  const syncLineNo = parseInt(conf["SyncLine_No."]);
-  const workFolderId = extractId(workDirId || conf["WorkFolder_URL"]);
-
-  const syncTag = "-- Sync_Scheduleによって自動登録されました --";
-  const now = new Date();
-  const syncTimestamp = Utilities.formatDate(now, "JST", "yyyy/MM/dd HH:mm");
-  
-  // キャッシュと集計
-  let addressCache = {};
-  let geminiCount = 0;
-
-  // --- 3. Gemini接続確認テスト ---
+  // --- 5. Gemini接続確認 ---
   console.log("【Gemini接続確認開始】モデル: gemini-2.5-flash");
   let isGeminiAvailable = geminiApiKey ? testGeminiConnection(geminiApiKey) : false;
 
-  // --- 4. 実行準備 ---
-  let sourceFile;
+  // --- 6. ソースファイル取得 ---
+  // 共有ドライブ上のファイルにも対応するため Drive.Files.get() で取得する
+  let sourceFileBlob;
   try {
-    sourceFile = DriveApp.getFileById(sourceFileId);
-  } catch (e) {
-    console.error("ソースファイルの取得に失敗しました: " + e.message);
-    return;
+    sourceFileBlob = DriveApp.getFileById(sourceFileId).getBlob();
+  } catch (e1) {
+    // DriveApp で失敗した場合は Drive API（共有ドライブ対応）でリトライ
+    try {
+      console.warn("DriveApp での取得失敗。Drive API で再試行します: " + e1.message);
+      const fileMeta = Drive.Files.get(sourceFileId, { supportsAllDrives: true, fields: "id,name,mimeType" });
+      const fileRes = UrlFetchApp.fetch(
+        "https://www.googleapis.com/drive/v3/files/" + sourceFileId + "?alt=media&supportsAllDrives=true",
+        { headers: { Authorization: "Bearer " + ScriptApp.getOAuthToken() }, muteHttpExceptions: true }
+      );
+      if (fileRes.getResponseCode() !== 200) {
+        console.error("ソースファイルの取得に失敗しました（HTTP " + fileRes.getResponseCode() + "）");
+        return;
+      }
+      sourceFileBlob = fileRes.getBlob().setName(fileMeta.name);
+      console.log("【Drive API で取得成功】" + fileMeta.name);
+    } catch (e2) {
+      console.error("ソースファイルの取得に失敗しました: " + e2.message);
+      return;
+    }
   }
 
-  const calendar = CalendarApp.getCalendarById('primary');
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
-  const protectUntil = new Date(today.getTime() + (7 * 24 * 60 * 60 * 1000));
-  const syncUntil = new Date(today.getTime() + (12 * 7 * 24 * 60 * 60 * 1000));
+  // ProtectUntil: スクリプトプロパティの日数（未設定時は0日＝今日から即変更対象）
+  const protectDays = parseInt(props['Protect_Until'] || "0");
+  const protectUntil = new Date(today.getTime() + (protectDays * 24 * 60 * 60 * 1000));
+  // Sync_Until: スクリプトプロパティの週数（未設定時は12週）
+  const syncWeeks = parseInt(props['Sync_Until'] || "12");
+  const syncUntil = new Date(today.getTime() + (syncWeeks * 7 * 24 * 60 * 60 * 1000));
+  console.log("【保護期間】" + protectDays + "日間（" + Utilities.formatDate(protectUntil, "JST", "yyyy/MM/dd") + "以降を変更対象）");
+  console.log("【同期範囲】" + syncWeeks + "週間（" + Utilities.formatDate(syncUntil, "JST", "yyyy/MM/dd") + "まで）");
 
   for (let m = 0; m <= 4; m++) {
     const targetDate = new Date(now.getFullYear(), now.getMonth() + m, 1);
@@ -88,44 +118,47 @@ function updateAndSyncSchedule() {
 
     let tempFileId = null;
 
-    // --- 5. currentSSに同名シートがなければExcelから値をコピーして作成 ---
+    // --- 5. Excelから最新データを読み込み、currentSSのシートを常に更新する ---
     let localSheet = currentSS.getSheetByName(yearMonth);
-    if (!localSheet) {
-      try {
-        // ExcelをDrive APIで一時的にGoogle Sheetsに変換
-        const metadata = {
-          name: "temp_convert_" + yearMonth,
-          mimeType: "application/vnd.google-apps.spreadsheet",
-          parents: [workFolderId]
-        };
-        const tempFile = Drive.Files.create(metadata, sourceFile.getBlob());
-        tempFileId = tempFile.id;
-        const tempSS = SpreadsheetApp.openById(tempFileId);
-        const tempSheet = tempSS.getSheetByName(yearMonth);
+    try {
+      // ExcelをDrive APIで一時的にGoogle Sheetsに変換
+      const metadata = {
+        name: "temp_convert_" + yearMonth,
+        mimeType: "application/vnd.google-apps.spreadsheet",
+        parents: [workFolderId]
+      };
+      const tempFile = Drive.Files.create(metadata, sourceFileBlob);
+      tempFileId = tempFile.id;
+      const tempSS = SpreadsheetApp.openById(tempFileId);
+      const tempSheet = tempSS.getSheetByName(yearMonth);
 
-        if (tempSheet) {
-          // 値・書式をcurrentSSに新規シートとしてコピー
-          const newSheet = currentSS.insertSheet(yearMonth);
-          const srcRange = tempSheet.getDataRange();
-          const destRange = newSheet.getRange(1, 1, srcRange.getNumRows(), srcRange.getNumColumns());
-          destRange.setValues(srcRange.getValues());
-          destRange.setFontColors(srcRange.getFontColors());
-          destRange.setBackgrounds(srcRange.getBackgrounds());
-          localSheet = newSheet;
+      if (tempSheet) {
+        const srcRange = tempSheet.getDataRange();
+        if (!localSheet) {
+          // シートが存在しない場合：新規作成
+          localSheet = currentSS.insertSheet(yearMonth);
           console.log(logLabel + ": currentSSに新規シートを作成しました。");
         } else {
-          console.log(logLabel + ": Excelに該当シートなし。スキップします。");
-          Drive.Files.remove(tempFileId);
-          tempFileId = null;
-          continue;
+          // シートが既存の場合：既存データをクリアして最新データで上書き
+          localSheet.clearContents();
+          localSheet.clearFormats();
+          console.log(logLabel + ": currentSSの既存シートをExcelの最新データで更新しました。");
         }
-      } catch (e) {
-        console.error(logLabel + "のExcel変換・コピー失敗: " + e.message);
-        if (tempFileId) { Drive.Files.remove(tempFileId); tempFileId = null; }
+        // 値・書式をcurrentSSのシートに反映
+        const destRange = localSheet.getRange(1, 1, srcRange.getNumRows(), srcRange.getNumColumns());
+        destRange.setValues(srcRange.getValues());
+        destRange.setFontColors(srcRange.getFontColors());
+        destRange.setBackgrounds(srcRange.getBackgrounds());
+      } else {
+        console.log(logLabel + ": Excelに該当シートなし。スキップします。");
+        Drive.Files.remove(tempFileId);
+        tempFileId = null;
         continue;
       }
-    } else {
-      console.log(logLabel + ": currentSSに既存シートあり。そのまま使用します。");
+    } catch (e) {
+      console.error(logLabel + "のExcel変換・コピー失敗: " + e.message);
+      if (tempFileId) { Drive.Files.remove(tempFileId); tempFileId = null; }
+      continue;
     }
 
     const endOfMonth = new Date(targetDate.getFullYear(), targetDate.getMonth() + 1, 0, 23, 59, 59);
@@ -202,16 +235,7 @@ function updateAndSyncSchedule() {
           if (result.isMain) prefix = "【メイン】設置@";
         } else {
           result = getTripleSearchAddress(content, geminiApiKey, isGeminiAvailable);
-          
-          // 精密場所検索
-          if (result.address) {
-            const placeDetail = findPrecisePlace(content, result.address);
-            if (placeDetail) {
-              result.address = placeDetail;
-              result.log += " -> 精密場所検索を適用";
-            }
-          }
-          
+
           // 【メイン】属性をキャッシュに保持
           result.isMain = (color === colorMain);
           
@@ -255,25 +279,6 @@ function extractCalendarId(input) {
 }
 
 /**
- * 企業名と住所から正確な場所情報を取得する
- */
-function findPrecisePlace(name, address) {
-  const cleanName = name.replace(/[0-9０-９]+台.*$/, "").replace(/[（(].*[）)]/g, "").trim();
-  const searchQuery = `${cleanName} ${address}`;
-  
-  try {
-    const results = Maps.newGeocoder().setLanguage('ja').setRegion('jp').geocode(searchQuery);
-    if (results.status === "OK") {
-      const bestMatch = results.results[0];
-      return bestMatch.formatted_address.replace(/^日本、/, "");
-    }
-  } catch (e) {
-    console.warn(`プレイス検索失敗: ${searchQuery} - ${e.message}`);
-  }
-  return null;
-}
-
-/**
  * 接続テスト（グローバルエンドポイント & gemini-2.5-flash）
  */
 function testGeminiConnection(apiKey) {
@@ -295,32 +300,60 @@ function testGeminiConnection(apiKey) {
 }
 
 /**
- * 住所検索（Maps精度判定付）
+ * 住所検索
+ * 検索順序:
+ *   1. Googleマップ単体検索 → ROOFTOP/RANGE_INTERPOLATED で一意確定なら即返却
+ *   2. 施設名＋住所で精密検索（findPrecisePlace）→ 一意確定なら返却
+ *   3. 上記で一意にならない場合のみ Gemini を使用
  */
 function getTripleSearchAddress(placeName, apiKey, isGeminiAvailable) {
-  let query = placeName.replace(/[0-9０-９]+台.*$/, "").replace(/[（(].*[）)]/g, "").trim();
-  let mapAddress = "";
-  let isMapDetailed = false;
+  const query = placeName.replace(/[0-9０-９]+台.*$/, "").replace(/[（(].*[）)]/g, "").trim();
 
+  // --- Step1: Googleマップ単体検索 ---
+  let mapAddress = "";
+  let mapLocationType = "";
   try {
     const results = Maps.newGeocoder().setLanguage('ja').setRegion('jp').geocode(query);
     if (results.status === "OK") {
-      let bestMatch = results.results[0];
+      const bestMatch = results.results[0];
       mapAddress = bestMatch.formatted_address.replace(/^日本、/, "");
-      let type = bestMatch.geometry.location_type;
-      if (type === "ROOFTOP" || type === "RANGE_INTERPOLATED") isMapDetailed = true;
+      mapLocationType = bestMatch.geometry.location_type;
     }
   } catch (e) {}
 
-  if (isMapDetailed) return { address: mapAddress, log: "Googleマップで住所設定", isGeminiUsed: false };
+  const isDetailed = (t) => t === "ROOFTOP" || t === "RANGE_INTERPOLATED";
 
+  if (isDetailed(mapLocationType)) {
+    return { address: mapAddress, log: "Googleマップで住所設定（精度: " + mapLocationType + "）", isGeminiUsed: false };
+  }
+
+  // --- Step2: 施設名＋住所で精密検索 ---
+  if (mapAddress) {
+    const cleanName = placeName.replace(/[0-9０-９]+台.*$/, "").replace(/[（(].*[）)]/g, "").trim();
+    try {
+      const results2 = Maps.newGeocoder().setLanguage('ja').setRegion('jp').geocode(cleanName + " " + mapAddress);
+      if (results2.status === "OK") {
+        const best2 = results2.results[0];
+        const type2 = best2.geometry.location_type;
+        if (isDetailed(type2)) {
+          const preciseAddress = best2.formatted_address.replace(/^日本、/, "");
+          return { address: preciseAddress, log: "精密場所検索で住所設定（精度: " + type2 + "）", isGeminiUsed: false };
+        }
+      }
+    } catch (e) {
+      console.warn("精密場所検索失敗: " + e.message);
+    }
+  }
+
+  // --- Step3: Googleマップで一意に特定できなかった場合のみ Gemini を使用 ---
+  console.log("[Gemini使用] \"" + placeName + "\" はマップで一意特定できず（精度: " + (mapLocationType || "取得不可") + "）");
   if (isGeminiAvailable) {
-    let geminiRes = callGeminiWithRetry(placeName, apiKey);
+    const geminiRes = callGeminiWithRetry(placeName, apiKey);
     if (geminiRes.success) return { address: geminiRes.address, log: "Geminiで住所設定", isGeminiUsed: true };
     if (mapAddress) return { address: mapAddress, log: "Gemini不明のためGoogleマップ情報を引き継ぎ", isGeminiUsed: true };
   }
 
-  return { address: mapAddress, log: mapAddress ? "Googleマップ情報を引き継ぎ" : "住所特定不可", isGeminiUsed: isGeminiAvailable };
+  return { address: mapAddress, log: mapAddress ? "Googleマップ情報を引き継ぎ" : "住所特定不可", isGeminiUsed: false };
 }
 
 /**
@@ -399,21 +432,17 @@ function debugReqOff() {
   let cal = null;
   try {
     cal = CalendarApp.getCalendarById(calId);
-    if (cal) console.log("→ ✅ 接続成功: " + cal.getName());
+    if (cal) { console.log("【" + cal.getName() + " 接続完了】"); console.log("【" + calId + "】"); }
     else     console.error("→ ❌ getCalendarById が null を返しました。IDが正しいか、このアカウントからアクセス可能か確認してください。");
   } catch (e) {
     console.error("→ ❌ 例外発生: " + e.message);
   }
 
-  // ---- [診断3] Config・syncLineNo 確認 ----
-  console.log("━━━ [診断3] Config シート ━━━");
-  const configSheet = ss.getSheetByName("Config");
-  if (!configSheet) { console.error("→ ❌ Config シートが見つかりません"); return; }
-  let conf = {};
-  configSheet.getDataRange().getValues().forEach(row => { conf[row[0]] = row[1]; });
-  const syncLineNo = parseInt(conf["SyncLine_No."]);
-  console.log("SyncLine_No. = " + syncLineNo);
-  if (isNaN(syncLineNo)) { console.error("→ ❌ SyncLine_No. が数値ではありません"); return; }
+  // ---- [診断3] syncLineNo 確認 ----
+  console.log("━━━ [診断3] スクリプトプロパティ（SyncLine_No） ━━━");
+  const syncLineNo = parseInt(props['SyncLine_No'] || "1");
+  console.log("SyncLine_No = " + syncLineNo);
+  if (isNaN(syncLineNo)) { console.error("→ ❌ SyncLine_No が数値ではありません"); return; }
 
   // ---- [診断4] 背景色スキャン（本番と同じロジックで確認）----
   // 本番では「currentSSに同名シートがあればそれを使い、なければExcelを変換してコピー」する。
@@ -424,8 +453,8 @@ function debugReqOff() {
     const m = input.match(/[-\w]{25,}/);
     return m ? m[0] : input;
   };
-  const sourceFileId = extractId(conf["Inport_URL"]);
-  const workFolderId = extractId(props['Work_Dir'] || conf["WorkFolder_URL"]);
+  const sourceFileId = extractId(props['Inport_URL'] || "");
+  const workFolderId = extractId(props['Work_Dir']   || "");
 
   const now = new Date();
   // 当月と翌月をチェック
@@ -442,13 +471,25 @@ function debugReqOff() {
       console.log("シート " + yearMonth + " → currentSSになし。Excelから変換して確認します...");
       let tempFileId = null;
       try {
-        const sourceFile = DriveApp.getFileById(sourceFileId);
+        // 共有ドライブ対応: DriveApp 失敗時は Drive API でフォールバック
+        let debugBlob;
+        try {
+          debugBlob = DriveApp.getFileById(sourceFileId).getBlob();
+        } catch (e1) {
+          const fileRes = UrlFetchApp.fetch(
+            "https://www.googleapis.com/drive/v3/files/" + sourceFileId + "?alt=media&supportsAllDrives=true",
+            { headers: { Authorization: "Bearer " + ScriptApp.getOAuthToken() }, muteHttpExceptions: true }
+          );
+          if (fileRes.getResponseCode() !== 200) throw new Error("ファイル取得失敗 HTTP " + fileRes.getResponseCode());
+          const fileMeta = Drive.Files.get(sourceFileId, { supportsAllDrives: true, fields: "name" });
+          debugBlob = fileRes.getBlob().setName(fileMeta.name);
+        }
         const metadata = {
           name: "debug_temp_" + yearMonth,
           mimeType: "application/vnd.google-apps.spreadsheet",
           parents: [workFolderId]
         };
-        const tempFile = Drive.Files.create(metadata, sourceFile.getBlob());
+        const tempFile = Drive.Files.create(metadata, debugBlob);
         tempFileId = tempFile.id;
         const tempSS = SpreadsheetApp.openById(tempFileId);
         sheet = tempSS.getSheetByName(yearMonth);
@@ -481,8 +522,20 @@ function debugReqOff() {
   // ---- [診断5] 保護期間の確認 ----
   console.log("━━━ [診断5] 保護期間 ━━━");
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const protectUntil = new Date(today.getTime() + (7 * 24 * 60 * 60 * 1000));
+  const protectDays = parseInt(props['Protect_Until'] || "0");
+  const protectUntil = new Date(today.getTime() + (protectDays * 24 * 60 * 60 * 1000));
   console.log("今日: " + Utilities.formatDate(today, "JST", "yyyy/MM/dd"));
-  console.log("登録開始日（7日後）: " + Utilities.formatDate(protectUntil, "JST", "yyyy/MM/dd"));
-  console.log("→ この日付より前のセルは保護期間のためスキップされます");
+  console.log("Protect_Until = " + protectDays + "日 → 変更対象開始日: " + Utilities.formatDate(protectUntil, "JST", "yyyy/MM/dd"));
+  console.log("→ この日付以降のセルが登録・更新されます");
+  // ---- [診断6] Work_CalendarID 確認 ----
+  console.log("━━━ [診断6] Work_CalendarID ━━━");
+  const workCalId = (props['Work_CalendarID'] || "").trim();
+  console.log("Work_CalendarID = \"" + workCalId + "\"");
+  if (!workCalId) {
+    console.warn("→ ⚠️ 未設定のため、プライマリカレンダーを使用します。");
+  } else {
+    const wCal = CalendarApp.getCalendarById(workCalId);
+    if (wCal) { console.log("【" + wCal.getName() + " 接続完了】"); console.log("【" + workCalId + "】"); }
+    else      console.error("→ ❌ カレンダーが見つかりません。IDを確認してください。");
+  }
 }
