@@ -29,6 +29,7 @@
 3. こんな感じになります  
 ![RM_Property.png](img/RM_Property.png)
 
+### Config名と機能
 |ConfigName|Value|Discription|
 | -------- | --- | --------- |
 | Color_Attend | カラーコード <br> #FF0000(既定) | 稼働@案件名　というタイトルになります <br> 同じ案件名でメイン案件がある場合のみ、メイン稼働@案件名　このタイトルになります|
@@ -46,6 +47,7 @@
 | Sync_Until | 半角数字 | 同期したい週数 |
 | Work_CalendarID | カレンダーID | 案件名が入るカレンダー |
 | Work_Dir | URL | 作業ディレクトリとして割り当てるURL |
+| Delete_Allday | True/False | Tureの場合全ての予定が再登録されます。Falseの場合、既に同名の案件が登録されていればそのまま残ります。 |
 
 ### 実装予定機能（予定は未定😏）
 * サイボウズOfficeの予定登録に対応したCSVファイル出力
