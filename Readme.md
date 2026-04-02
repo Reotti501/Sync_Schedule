@@ -30,6 +30,7 @@
 ![RM_Property.png](img/RM_Property.png)
 
 ### Config名と機能
+
 |ConfigName|Value|Discription|
 | -------- | --- | --------- |
 | Color_Attend | カラーコード <br> #FF0000(既定) | 稼働@案件名　というタイトルになります <br> 同じ案件名でメイン案件がある場合のみ、メイン稼働@案件名　このタイトルになります|
@@ -37,18 +38,17 @@
 | Color_Tentative (未実装) | カラーコード <br> #ffd965 | 設置&稼働@案件名　というタイトルになります |
 | Color_Installation (未実装) | カラーコード <br> #000000(既定) | ハードコードされています 設置@案件名　というタイトルになります |
 | Color_Combined (未実装) | カラーコード <br> #f7caac(既定) | 仮予定@案件名　というタイトルになります |
+| Delete_Allday | True/False | Tureの場合全ての予定が再登録されます。Falseの場合、既に同名の案件が登録されていればそのまま残ります。 |
 | Export_URL | URL | スケジュールのコピーが生成されるスプレッドシートのURL |
 | Gemini_key | APIキー | Geminiを使用して場所情報を検索するために使用するAPIキー |
 | Inport_URL | URL | 元とするスケジュールが記載されているURL |
-| Protect_Until | 半角数字 | 予定を変更しない日数の指定 |
+| Protect_Until | 半角数字 | 予定を変更しない日数の指定 <br> サイボウズ用csvが出力される日数 |
 | Req_Off (未実装) | カラーコード <br> #ffff00 (既定) | 希望休の塗りつぶし色指定用 |
 | Req_Off_CalendarID | カレンダーID | 希望休(セルが黄色で塗りつぶされている日)が登録されるカレンダー |
 | SyncLine_No | 半角数字 | 予定を取得したい行数 |
 | Sync_Until | 半角数字 | 同期したい週数 |
 | Work_CalendarID | カレンダーID | 案件名が入るカレンダー |
-| Work_Dir | URL | 作業ディレクトリとして割り当てるURL |
-| Delete_Allday | True/False | Tureの場合全ての予定が再登録されます。Falseの場合、既に同名の案件が登録されていればそのまま残ります。 |
+| Work_Dir | URL | 作業ディレクトリとして割り当てるURL <br> csvファイルが出力される場所 |
 
 ### 実装予定機能（予定は未定😏）
-* サイボウズOfficeの予定登録に対応したCSVファイル出力
 * 未実装の機能追加
